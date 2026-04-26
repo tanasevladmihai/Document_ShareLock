@@ -1,2 +1,2 @@
 # Summary_LLM
-Local LLM document insights and summary LLM
+Local LLM for document insights and summaries.
