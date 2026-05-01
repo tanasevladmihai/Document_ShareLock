@@ -1,2 +1,2 @@
-# Summary_LLM
-Local LLM for document insights and summaries.
+# Document_Sherlock
+Software running a LLM for private document summaries, insights and categorization.
