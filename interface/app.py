@@ -5,7 +5,7 @@ from docx import Document
 import io
 
 
-MODEL_URL = "http://llama-server:8080/completion"
+OLLAMA_API_URL = "http://llama-server:8080/completion"
 
 
 def read_txt_file(uploaded_file):
