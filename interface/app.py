@@ -81,23 +81,6 @@ if st.button("Send"):
     if user_message.strip() == "" and file_text.strip() == "":
         st.warning("Please type a message or upload a document.")
     else:
-        """content_blocks = [
-            "System Instructions: You are a helpful AI assistant. Answer the user's request based on the provided messages and documents."
-        ]
-
-        if user_message.strip():
-            content_blocks.append(f"User message:\n{user_message.strip()}")
-
-        if file_text.strip():
-            content_blocks.append(f"Document content:\n{file_text.strip()}")
-
-        raw_user_content = "\n\n".join(content_blocks)
-
-        final_prompt = (
-            f"<start_of_turn>user\n{raw_user_content}<end_of_turn>\n"
-            "<start_of_turn>model\n"
-        )"""
-
         user_prompt_content = "<instruction>\n"
         user_prompt_content += "You are a precise AI assistant. Answer the user's request using ONLY the provided document context below. "
         user_prompt_content += "If the document context is empty, respond directly to the user's message. Do not invent any instructions.\n"
@@ -120,7 +103,7 @@ if st.button("Send"):
                     MODEL_URL,
                     json={
                         "prompt": final_prompt,
-                        "stop": ["<end_of_turn>", "<start_of_turn>", "user:", "model:", "</instruction>"],
+                        "stop": ["<end_of_turn>", "<start_of_turn>", "user:", "model:"],
                         "temperature": 0.1,
                         "top_p": 0.9,
                         "cache_prompt": True
@@ -130,10 +113,17 @@ if st.button("Send"):
                 st.subheader("Response")
                 
                 response_json = response.json()
+                
                 if "content" in response_json:
-                    st.write(response_json["content"])
+                    st.write(response_json["content"].strip())
                 else:
-                    st.write(response_json.get("choices", [{}])[0].get("text", "No message content found."))
+                    choices_data = response_json.get("choices", [{}])
+                    generated_output = choices_data[0].get("text", "").strip() if choices_data else ""
+                    
+                    if generated_output:
+                        st.write(generated_output)
+                    else:
+                        st.write("No message content found.")
 
             except Exception as error:
                 st.error("Could not connect to the model server.")
