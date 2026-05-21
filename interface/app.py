@@ -82,7 +82,7 @@ if st.button("Send"):
         st.warning("Please type a message or upload a document.")
     else:
         user_prompt_content = "<instruction>\n"
-        user_prompt_content += "You are a precise AI assistant. Answer the user's request using ONLY the provided document context below. "
+        user_prompt_content += "You are a precise AI assistant. Answer the user's request using ONLY the provided user's request AND document context below. "
         user_prompt_content += "If the document context is empty, respond directly to the user's message. Do not invent any instructions.\n"
         user_prompt_content += "</instruction>\n\n"
 
