@@ -81,7 +81,7 @@ if st.button("Send"):
     if user_message.strip() == "" and file_text.strip() == "":
         st.warning("Please type a message or upload a document.")
     else:
-        content_blocks = [
+        """content_blocks = [
             "System Instructions: You are a helpful AI assistant. Answer the user's request based on the provided messages and documents."
         ]
 
@@ -96,6 +96,22 @@ if st.button("Send"):
         final_prompt = (
             f"<start_of_turn>user\n{raw_user_content}<end_of_turn>\n"
             "<start_of_turn>model\n"
+        )"""
+
+        user_prompt_content = "<instruction>\n"
+        user_prompt_content += "You are a precise AI assistant. Answer the user's request using ONLY the provided document context below. "
+        user_prompt_content += "If the document context is empty, respond directly to the user's message. Do not invent any instructions.\n"
+        user_prompt_content += "</instruction>\n\n"
+
+        if user_message.strip():
+            user_prompt_content += f"<user_request>\n{user_message.strip()}\n</user_request>\n\n"
+
+        if file_text.strip():
+            user_prompt_content += f"<document_context>\n{file_text.strip()}\n</document_context>\n\n"
+
+        final_prompt = (
+            f"<start_of_turn>user\n{user_prompt_content.strip()}<end_of_turn>\n"
+            "<start_of_turn>model\n"
         )
 
         with st.spinner("Sending to the model..."):
@@ -104,11 +120,13 @@ if st.button("Send"):
                     MODEL_URL,
                     json={
                         "prompt": final_prompt,
-                        "stop": ["<end_of_turn>", "<start_of_turn>", "user:", "model:"]
+                        "stop": ["<end_of_turn>", "<start_of_turn>", "user:", "model:", "</instruction>"],
+                        "temperature": 0.1,
+                        "top_p": 0.9,
+                        "cache_prompt": True
                     },
                     timeout=120
                 )
-
                 st.subheader("Response")
                 
                 response_json = response.json()
