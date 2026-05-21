@@ -81,28 +81,41 @@ if st.button("Send"):
     if user_message.strip() == "" and file_text.strip() == "":
         st.warning("Please type a message or upload a document.")
     else:
-        final_prompt = ""
+        content_blocks = [
+            "System Instructions: You are a helpful AI assistant. Answer the user's request based on the provided messages and documents."
+        ]
 
         if user_message.strip():
-            final_prompt += "User message:\n"
-            final_prompt += user_message.strip()
-            final_prompt += "\n\n"
+            content_blocks.append(f"User message:\n{user_message.strip()}")
 
         if file_text.strip():
-            final_prompt += "Document content:\n"
-            final_prompt += file_text.strip()
-            final_prompt += "\n\n"
+            content_blocks.append(f"Document content:\n{file_text.strip()}")
+
+        raw_user_content = "\n\n".join(content_blocks)
+
+        final_prompt = (
+            f"<start_of_turn>user\n{raw_user_content}<end_of_turn>\n"
+            "<start_of_turn>model\n"
+        )
 
         with st.spinner("Sending to the model..."):
             try:
                 response = requests.post(
                     MODEL_URL,
-                    json={"prompt": final_prompt},
+                    json={
+                        "prompt": final_prompt,
+                        "stop": ["<end_of_turn>", "<start_of_turn>", "user:", "model:"]
+                    },
                     timeout=120
                 )
 
                 st.subheader("Response")
-                st.write(response.text)
+                
+                response_json = response.json()
+                if "content" in response_json:
+                    st.write(response_json["content"])
+                else:
+                    st.write(response_json.get("choices", [{}])[0].get("text", "No message content found."))
 
             except Exception as error:
                 st.error("Could not connect to the model server.")
