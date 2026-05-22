@@ -4,6 +4,8 @@ services:
   llama-server:
     build:
       context: ./ml_backend
+    container_name: llama-server
+    hostname: llama-server
     ports:
       - "8082:8080"
     networks:
@@ -12,6 +14,7 @@ services:
   interface-server:
     build:
       context: ./interface
+    container_name: interface-server
     ports:
       - "8501:8501"
     depends_on:
