@@ -3,7 +3,7 @@ FROM ubuntu:22.04 AS downloader
 RUN apt-get update && apt-get install -y wget
 WORKDIR /models
 
-RUN wget -O /models/gemma-4-e4b.gguf https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf
+RUN wget -O /models/gemma-4-e4b.gguf https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf
 
 FROM ghcr.io/ggml-org/llama.cpp:server
 COPY --from=downloader /models/gemma-4-e4b.gguf /models/gemma-4-e4b.gguf
