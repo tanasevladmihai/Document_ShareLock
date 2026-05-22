@@ -6,7 +6,7 @@ import io
 
 
 OLLAMA_API_URL = "http://llama-server:8080/completion"
-
+MODEL_URL = "http://llama-server:8080/completion"
 
 def read_txt_file(uploaded_file):
     return uploaded_file.read().decode("utf-8", errors="ignore")
