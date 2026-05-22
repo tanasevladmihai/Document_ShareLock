@@ -7,5 +7,5 @@ RUN wget -O /models/gemma-4-e4b.gguf https://ollama.com/library/gemma4:e4b
 FROM ghcr.io/ggml-org/llama.cpp:server
 COPY --from=downloader /models/gemma-4-e4b.gguf /models/gemma-4-e4b.gguf
 
-ENTRYPOINT ["/llama-server"]
+
 CMD ["-m", "/models/gemma-4-e4b.gguf", "--host", "0.0.0.0", "--port", "8080", "--threads", "4", "--ctx-size", "2048"]
