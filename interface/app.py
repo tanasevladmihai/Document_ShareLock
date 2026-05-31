@@ -104,11 +104,11 @@ if st.button("Send"):
                     json={
                         "prompt": final_prompt,
                         "stop": ["<end_of_turn>", "<start_of_turn>", "user:", "model:"],
-                        "temperature": 0.1,
+                        "temperature": 0.5,
                         "top_p": 0.9,
                         "cache_prompt": True
                     },
-                    timeout=120
+                    timeout=240
                 )
                 st.subheader("Response")
                 
