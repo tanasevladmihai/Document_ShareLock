@@ -128,5 +128,5 @@ The project does not follow the Waterfall model as its primary approach. It is b
 
 ## Teammates
 - [Tănase Vlad Mihai](https://github.com/tanasevladmihai) - MLOps pipeline, model fine-tuning, RAG implementation, prompt engineering, model serving
-- [Dimitriu Diandra](https://github.com/Diandra-Dimitriu) - Interface development, document processing workflow implementation, user experience design
-- [Ștefanov Carla](https://github.com/carlastefanov05-cyber) - DevOps: Jenkins pipeline, containerization, deployment automation, testing, monitoring setup
+- [Dimitriu Diandra](https://github.com/Diandra-Dimitriu) - DevOps: Jenkins pipeline, containerization, deployment automation, testing
+- [Ștefanov Carla](https://github.com/carlastefanov05-cyber) - Interface development, document processing workflow implementation, user experience design
