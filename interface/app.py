@@ -7,6 +7,7 @@ import io
 
 OLLAMA_API_URL = "http://llama-server:8080/completion"
 MODEL_URL = "http://llama-server:8080/completion"
+MAX_OUTPUT_TOKENS = 2048
 
 def read_txt_file(uploaded_file):
     return uploaded_file.read().decode("utf-8", errors="ignore")
@@ -104,6 +105,7 @@ if st.button("Send"):
                     json={
                         "prompt": final_prompt,
                         "stop": ["<end_of_turn>", "<start_of_turn>"],
+                        "n_predict": MAX_OUTPUT_TOKENS,
                         "temperature": 0.5,
                         "top_p": 0.9,
                         "cache_prompt": True
