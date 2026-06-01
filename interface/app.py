@@ -12,6 +12,9 @@ from sentence_transformers import SentenceTransformer
 
 OLLAMA_API_URL = "http://llama-server:8080/completion"
 MODEL_URL = "http://llama-server:8080/completion"
+#MAX_OUTPUT_TOKENS_INSIGHTFUL = 1536
+#MAX_OUTPUT_TOKENS_PRECISE = 2048
+
 MAX_OUTPUT_TOKENS = 2048
 EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 CHUNK_TOKEN_SIZE = 220
@@ -27,9 +30,9 @@ ANSWER_MODES = {
     "Insightful": {
         "temperature": 0.8,
         "top_p": 0.95,
-        "seed_chunks": 4,
+        "seed_chunks": 3,
         "neighbor_window": 1,
-        "max_chunks": 10,
+        "max_chunks": 6,
     },
 }
 SUMMARY_BATCH_CHUNKS = 6
@@ -430,7 +433,8 @@ The summary gives broad document context. The chunks are the most relevant evide
 
 initialize_document_state()
 
-st.title("LLM Chat Interface")
+st.title("Document ShareLock")
+st.subheader("Chat Interface for Uploaded Documents")
 
 st.write("Type a message, upload a document, or do both.")
 
