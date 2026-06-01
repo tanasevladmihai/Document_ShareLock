@@ -16,7 +16,22 @@ MAX_OUTPUT_TOKENS = 2048
 EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 CHUNK_TOKEN_SIZE = 220
 CHUNK_TOKEN_OVERLAP = 40
-TOP_K_CHUNKS = 6
+ANSWER_MODES = {
+    "Precise": {
+        "temperature": 0.5,
+        "top_p": 0.9,
+        "seed_chunks": 6,
+        "neighbor_window": 0,
+        "max_chunks": 6,
+    },
+    "Insightful": {
+        "temperature": 0.8,
+        "top_p": 0.95,
+        "seed_chunks": 4,
+        "neighbor_window": 1,
+        "max_chunks": 10,
+    },
+}
 SUMMARY_BATCH_CHUNKS = 6
 SUMMARY_BATCH_TOKENS = 256
 SUMMARY_FINAL_TOKENS = 512
@@ -186,7 +201,7 @@ def wrap_model_prompt(user_content):
     )
 
 
-def call_model_completion(prompt, n_predict, temperature=0.2):
+def call_model_completion(prompt, n_predict, temperature=0.2, top_p=0.9):
     response = requests.post(
         MODEL_URL,
         json={
@@ -194,7 +209,7 @@ def call_model_completion(prompt, n_predict, temperature=0.2):
             "stop": ["<end_of_turn>", "<start_of_turn>"],
             "n_predict": n_predict,
             "temperature": temperature,
-            "top_p": 0.9,
+            "top_p": top_p,
             "cache_prompt": True,
         },
         timeout=300,
@@ -314,7 +329,7 @@ def index_uploaded_document(uploaded_file):
     st.session_state.document_summary_error = summary_error
 
 
-def retrieve_relevant_chunks(query, top_k=TOP_K_CHUNKS):
+def retrieve_relevant_chunks(query, mode_config):
     chunks = st.session_state.document_chunks or []
     embeddings = st.session_state.document_embeddings
 
@@ -324,10 +339,31 @@ def retrieve_relevant_chunks(query, top_k=TOP_K_CHUNKS):
     embedding_model = load_embedding_model()
     query_embedding = embed_texts(embedding_model, [query])[0]
     scores = embeddings @ query_embedding
-    ranked_indices = np.argsort(scores)[::-1][:min(top_k, len(chunks))]
+    seed_count = min(mode_config["seed_chunks"], len(chunks))
+    ranked_seed_indices = np.argsort(scores)[::-1][:seed_count]
+    neighbor_window = mode_config["neighbor_window"]
+
+    if neighbor_window == 0:
+        selected_indices = list(ranked_seed_indices)
+    else:
+        selected_indices = []
+        seen_indices = set()
+
+        for seed_index in ranked_seed_indices:
+            seed_index = int(seed_index)
+            expanded_start = max(0, seed_index - neighbor_window)
+            expanded_end = min(len(chunks), seed_index + neighbor_window + 1)
+
+            for chunk_index in range(expanded_start, expanded_end):
+                if chunk_index not in seen_indices:
+                    selected_indices.append(chunk_index)
+                    seen_indices.add(chunk_index)
+
+        selected_indices = selected_indices[:mode_config["max_chunks"]]
+        selected_indices = sorted(selected_indices)
 
     retrieved_chunks = []
-    for chunk_index in ranked_indices:
+    for chunk_index in selected_indices:
         chunk = dict(chunks[int(chunk_index)])
         chunk["score"] = float(scores[int(chunk_index)])
         retrieved_chunks.append(chunk)
@@ -335,10 +371,28 @@ def retrieve_relevant_chunks(query, top_k=TOP_K_CHUNKS):
     return retrieved_chunks
 
 
-def build_direct_prompt(user_request):
+def get_mode_instructions(answer_mode):
+    if answer_mode == "Insightful":
+        return """
+You are an insightful document assistant. You may look for subtle patterns, risks, omissions, implications, and details someone might miss.
+Stay grounded: separate document-supported observations from cautious interpretations.
+If an idea is not directly established by the provided context, label it as an inference or a possibility.
+Do not invent facts, names, dates, numbers, or requirements.
+"""
+
+    return """
+You are a precise AI assistant. Answer the user's request using only the provided context.
+If the answer is not supported by the provided context, say that the document does not provide enough information.
+Do not invent facts or instructions.
+"""
+
+
+def build_direct_prompt(user_request, answer_mode):
+    mode_instructions = get_mode_instructions(answer_mode)
     user_prompt_content = f"""
 <instruction>
-You are a precise AI assistant. Answer the user's request directly. Do not invent facts.
+{mode_instructions}
+There is no uploaded document context for this request, so answer directly and state uncertainty where appropriate.
 </instruction>
 
 <user_request>
@@ -348,16 +402,16 @@ You are a precise AI assistant. Answer the user's request directly. Do not inven
     return wrap_model_prompt(user_prompt_content)
 
 
-def build_document_prompt(user_request, document_summary, retrieved_chunks):
+def build_document_prompt(user_request, document_summary, retrieved_chunks, answer_mode):
+    mode_instructions = get_mode_instructions(answer_mode)
     summary_text = document_summary or "No whole-document summary is available."
     chunk_context = format_chunks_for_prompt(retrieved_chunks, include_scores=True)
 
     user_prompt_content = f"""
 <instruction>
-You are a precise AI assistant. Answer the user's request using ONLY the user request, the whole-document summary, and the retrieved document chunks below.
+{mode_instructions}
+Answer the user's request using only the user request, the whole-document summary, and the retrieved document chunks below.
 The summary gives broad document context. The chunks are the most relevant evidence.
-If the answer is not supported by the summary or chunks, say that the document does not provide enough information.
-Do not invent facts or instructions.
 </instruction>
 
 <user_request>
@@ -381,6 +435,13 @@ st.title("LLM Chat Interface")
 st.write("Type a message, upload a document, or do both.")
 
 user_message = st.text_area("Your message")
+
+answer_mode = st.radio(
+    "Answer mode",
+    list(ANSWER_MODES.keys()),
+    index=0,
+    horizontal=True,
+)
 
 uploaded_file = st.file_uploader(
     "Upload a document",
@@ -414,6 +475,7 @@ else:
 if st.button("Send"):
     user_request = user_message.strip()
     has_document = bool(st.session_state.document_chunks)
+    mode_config = ANSWER_MODES[answer_mode]
 
     if user_request == "" and not has_document:
         st.warning("Please type a message or upload a document.")
@@ -424,22 +486,24 @@ if st.button("Send"):
             user_request = "Summarize the uploaded document."
 
         if has_document:
-            retrieved_chunks = retrieve_relevant_chunks(user_request)
+            retrieved_chunks = retrieve_relevant_chunks(user_request, mode_config)
             final_prompt = build_document_prompt(
                 user_request,
                 st.session_state.document_summary,
                 retrieved_chunks,
+                answer_mode,
             )
-            st.caption(f"Using {len(retrieved_chunks)} retrieved chunks for this answer.")
+            st.caption(f"{answer_mode} mode is using {len(retrieved_chunks)} retrieved chunks for this answer.")
         else:
-            final_prompt = build_direct_prompt(user_request)
+            final_prompt = build_direct_prompt(user_request, answer_mode)
 
         with st.spinner("Sending to the model..."):
             try:
                 generated_output = call_model_completion(
                     final_prompt,
                     n_predict=MAX_OUTPUT_TOKENS,
-                    temperature=0.5,
+                    temperature=mode_config["temperature"],
+                    top_p=mode_config["top_p"],
                 )
                 st.subheader("Response")
 
