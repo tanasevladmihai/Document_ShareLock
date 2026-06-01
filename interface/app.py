@@ -103,7 +103,7 @@ if st.button("Send"):
                     MODEL_URL,
                     json={
                         "prompt": final_prompt,
-                        "stop": ["<end_of_turn>", "<start_of_turn>", "user:", "model:"],
+                        "stop": ["<end_of_turn>", "<start_of_turn>"],
                         "temperature": 0.5,
                         "top_p": 0.9,
                         "cache_prompt": True
