@@ -108,7 +108,7 @@ if st.button("Send"):
                         "top_p": 0.9,
                         "cache_prompt": True
                     },
-                    timeout=240
+                    timeout=300
                 )
                 st.subheader("Response")
                 
