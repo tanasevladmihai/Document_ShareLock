@@ -1,0 +1,55 @@
+groups:
+  - name: document-sharelock.rules
+    rules:
+      - alert: DocumentShareLockLlamaMetricsDown
+        expr: up{job="llama-server"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "llama.cpp metrics scrape is down"
+          description: "Prometheus cannot scrape llama-server:8080/metrics."
+
+      - alert: DocumentShareLockInterfaceMetricsDown
+        expr: up{job="interface-server"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Streamlit metrics scrape is down"
+          description: "Prometheus cannot scrape interface-server:9100/metrics."
+
+      - alert: DocumentShareLockHighModelErrorRate
+        expr: |
+          sum(rate(document_sharelock_model_requests_total{status="error"}[5m]))
+          /
+          clamp_min(sum(rate(document_sharelock_model_requests_total[5m])), 0.001)
+          > 0.10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Model error rate is above 10%"
+          description: "More than 10% of Streamlit model calls have failed over the last 5 minutes."
+
+      - alert: DocumentShareLockSlowModelLatency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(document_sharelock_model_request_latency_seconds_bucket[5m]))
+          ) > 60
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Model p95 latency is above 60 seconds"
+          description: "The Streamlit app is observing slow model responses."
+
+      - alert: DocumentShareLockDocumentIndexingFailures
+        expr: sum(rate(document_sharelock_document_index_errors_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Document indexing failures detected"
+          description: "At least one uploaded document indexing flow is failing."
