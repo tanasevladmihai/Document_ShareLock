@@ -23,6 +23,8 @@ GRAFANA_EMBED_URL = os.getenv(
     "GRAFANA_EMBED_URL",
     "http://localhost:3000/d/document-sharelock/document-sharelock-monitoring?orgId=1&kiosk",
 )
+MODEL_CONNECT_RETRIES = int(os.getenv("MODEL_CONNECT_RETRIES", "12"))
+MODEL_RETRY_DELAY_SECONDS = float(os.getenv("MODEL_RETRY_DELAY_SECONDS", "5"))
 #MAX_OUTPUT_TOKENS_INSIGHTFUL = 1536
 #MAX_OUTPUT_TOKENS_PRECISE = 2048
 
@@ -244,6 +246,26 @@ def parse_completion_result(response_json):
     )
 
 
+def is_retryable_model_error(error):
+    if isinstance(error, requests.ConnectionError):
+        return True
+
+    if isinstance(error, requests.HTTPError) and error.response is not None:
+        return error.response.status_code in {502, 503, 504}
+
+    return False
+
+
+def describe_model_error(error):
+    if isinstance(error, requests.ConnectionError):
+        return "The model server was not ready or reachable. Please wait a moment and try again."
+
+    if isinstance(error, requests.HTTPError) and error.response is not None:
+        return f"The model server returned HTTP {error.response.status_code}."
+
+    return str(error)
+
+
 def record_model_usage_metrics(result, purpose, answer_mode):
     usage = result.usage
     timings = result.timings
@@ -338,39 +360,50 @@ def call_model_completion(
     answer_mode="unknown",
 ):
     started_at = time.perf_counter()
+    last_error = None
 
-    try:
-        response = requests.post(
-            MODEL_URL,
-            json={
-                "prompt": prompt,
-                "stop": ["<end_of_turn>", "<start_of_turn>"],
-                "n_predict": n_predict,
-                "temperature": temperature,
-                "top_p": top_p,
-                "cache_prompt": True,
-            },
-            timeout=300,
-        )
-        response.raise_for_status()
-        result = parse_completion_result(response.json())
-    except Exception as error:
-        elapsed_seconds = time.perf_counter() - started_at
-        APP_METRICS.model_requests_total.labels(
-            purpose=purpose,
-            answer_mode=answer_mode,
-            status="error",
-        ).inc()
-        APP_METRICS.model_request_latency_seconds.labels(
-            purpose=purpose,
-            answer_mode=answer_mode,
-        ).observe(elapsed_seconds)
-        APP_METRICS.model_errors_total.labels(
-            purpose=purpose,
-            answer_mode=answer_mode,
-            error_type=type(error).__name__,
-        ).inc()
-        raise
+    for attempt in range(1, MODEL_CONNECT_RETRIES + 1):
+        try:
+            response = requests.post(
+                MODEL_URL,
+                json={
+                    "prompt": prompt,
+                    "stop": ["<end_of_turn>", "<start_of_turn>"],
+                    "n_predict": n_predict,
+                    "temperature": temperature,
+                    "top_p": top_p,
+                    "cache_prompt": True,
+                },
+                timeout=300,
+            )
+            response.raise_for_status()
+            result = parse_completion_result(response.json())
+            break
+        except Exception as error:
+            last_error = error
+            should_retry = is_retryable_model_error(error) and attempt < MODEL_CONNECT_RETRIES
+            if should_retry:
+                time.sleep(MODEL_RETRY_DELAY_SECONDS)
+                continue
+
+            elapsed_seconds = time.perf_counter() - started_at
+            APP_METRICS.model_requests_total.labels(
+                purpose=purpose,
+                answer_mode=answer_mode,
+                status="error",
+            ).inc()
+            APP_METRICS.model_request_latency_seconds.labels(
+                purpose=purpose,
+                answer_mode=answer_mode,
+            ).observe(elapsed_seconds)
+            APP_METRICS.model_errors_total.labels(
+                purpose=purpose,
+                answer_mode=answer_mode,
+                error_type=type(error).__name__,
+            ).inc()
+            raise
+    else:
+        raise last_error
 
     elapsed_seconds = time.perf_counter() - started_at
     APP_METRICS.model_requests_total.labels(
@@ -495,7 +528,7 @@ def index_uploaded_document(uploaded_file):
         try:
             summary = summarize_document(chunks)
         except Exception as error:
-            summary_error = f"Document summary could not be generated: {error}"
+            summary_error = f"Document summary could not be generated: {describe_model_error(error)}"
 
         st.session_state.document_fingerprint = get_file_fingerprint(uploaded_file)
         st.session_state.document_name = uploaded_file.name

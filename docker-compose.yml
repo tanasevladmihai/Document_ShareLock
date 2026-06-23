@@ -25,8 +25,11 @@ services:
     environment:
       PROMETHEUS_METRICS_PORT: "9100"
       GRAFANA_EMBED_URL: "http://localhost:3000/d/document-sharelock/document-sharelock-monitoring?orgId=1&kiosk"
+      MODEL_CONNECT_RETRIES: "12"
+      MODEL_RETRY_DELAY_SECONDS: "5"
     depends_on:
-      - llama-server
+      llama-server:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health', timeout=5)\""]
       interval: 30s
@@ -45,8 +48,10 @@ services:
       - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro,Z
       - ./monitoring/prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro,Z
     depends_on:
-      - llama-server
-      - interface-server
+      llama-server:
+        condition: service_healthy
+      interface-server:
+        condition: service_started
     networks:
       - llm-net
 
@@ -65,7 +70,8 @@ services:
       - ./monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro,Z
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro,Z
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_started
     networks:
       - llm-net
 
