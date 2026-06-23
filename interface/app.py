@@ -1,17 +1,28 @@
 import hashlib
 import io
 import math
+import os
+import time
+from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from docx import Document
 from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
 
+from monitoring import get_metrics
+
 
 OLLAMA_API_URL = "http://llama-server:8080/completion"
 MODEL_URL = "http://llama-server:8080/completion"
+GRAFANA_EMBED_URL = os.getenv(
+    "GRAFANA_EMBED_URL",
+    "http://localhost:3000/d/document-sharelock/document-sharelock-monitoring?orgId=1&kiosk",
+)
 #MAX_OUTPUT_TOKENS_INSIGHTFUL = 1536
 #MAX_OUTPUT_TOKENS_PRECISE = 2048
 
@@ -41,6 +52,7 @@ SUMMARY_FINAL_TOKENS = 512
 MAX_SUMMARY_CHARS = 4500
 
 st.set_page_config(page_title="LLM Chat Interface", page_icon=":speech_balloon:")
+APP_METRICS = get_metrics()
 
 
 DOCUMENT_STATE_KEYS = [
@@ -51,6 +63,14 @@ DOCUMENT_STATE_KEYS = [
     "document_summary",
     "document_summary_error",
 ]
+
+
+@dataclass(frozen=True)
+class ModelCompletionResult:
+    text: str
+    usage: dict[str, Any]
+    timings: dict[str, Any]
+    raw: dict[str, Any]
 
 
 @st.cache_resource(show_spinner="Loading local embedding model...")
@@ -197,6 +217,111 @@ def parse_model_response(response_json):
     return ""
 
 
+def get_numeric_value(data, *keys):
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, (int, float)):
+            return float(value)
+
+    return None
+
+
+def parse_completion_result(response_json):
+    usage = response_json.get("usage")
+    timings = response_json.get("timings")
+
+    if not isinstance(usage, dict):
+        usage = {}
+
+    if not isinstance(timings, dict):
+        timings = {}
+
+    return ModelCompletionResult(
+        text=parse_model_response(response_json),
+        usage=usage,
+        timings=timings,
+        raw=response_json,
+    )
+
+
+def record_model_usage_metrics(result, purpose, answer_mode):
+    usage = result.usage
+    timings = result.timings
+
+    prompt_tokens = get_numeric_value(
+        usage,
+        "prompt_tokens",
+        "prompt_n",
+        "tokens_evaluated",
+    )
+    if prompt_tokens is None:
+        prompt_tokens = get_numeric_value(
+            timings,
+            "prompt_n",
+            "tokens_evaluated",
+        )
+
+    generated_tokens = get_numeric_value(
+        usage,
+        "completion_tokens",
+        "generated_tokens",
+        "predicted_n",
+        "tokens_predicted",
+    )
+    if generated_tokens is None:
+        generated_tokens = get_numeric_value(
+            timings,
+            "predicted_n",
+            "tokens_predicted",
+        )
+
+    total_tokens = get_numeric_value(usage, "total_tokens")
+    if total_tokens is None and prompt_tokens is not None and generated_tokens is not None:
+        total_tokens = prompt_tokens + generated_tokens
+
+    if prompt_tokens is not None and prompt_tokens > 0:
+        APP_METRICS.model_prompt_tokens_total.labels(
+            purpose=purpose,
+            answer_mode=answer_mode,
+        ).inc(prompt_tokens)
+
+    if generated_tokens is not None and generated_tokens > 0:
+        APP_METRICS.model_generated_tokens_total.labels(
+            purpose=purpose,
+            answer_mode=answer_mode,
+        ).inc(generated_tokens)
+
+    if total_tokens is not None and total_tokens > 0:
+        APP_METRICS.model_total_tokens_total.labels(
+            purpose=purpose,
+            answer_mode=answer_mode,
+        ).inc(total_tokens)
+
+    prompt_per_second = get_numeric_value(timings, "prompt_per_second")
+    if prompt_per_second is None:
+        prompt_ms = get_numeric_value(timings, "prompt_ms")
+        if prompt_tokens and prompt_ms and prompt_ms > 0:
+            prompt_per_second = prompt_tokens / (prompt_ms / 1000)
+
+    generated_per_second = get_numeric_value(timings, "predicted_per_second")
+    if generated_per_second is None:
+        predicted_ms = get_numeric_value(timings, "predicted_ms")
+        if generated_tokens and predicted_ms and predicted_ms > 0:
+            generated_per_second = generated_tokens / (predicted_ms / 1000)
+
+    if prompt_per_second is not None:
+        APP_METRICS.model_prompt_tokens_per_second.labels(
+            purpose=purpose,
+            answer_mode=answer_mode,
+        ).set(prompt_per_second)
+
+    if generated_per_second is not None:
+        APP_METRICS.model_generated_tokens_per_second.labels(
+            purpose=purpose,
+            answer_mode=answer_mode,
+        ).set(generated_per_second)
+
+
 def wrap_model_prompt(user_content):
     return (
         f"<start_of_turn>user\n{user_content.strip()}<end_of_turn>\n"
@@ -204,21 +329,62 @@ def wrap_model_prompt(user_content):
     )
 
 
-def call_model_completion(prompt, n_predict, temperature=0.2, top_p=0.9):
-    response = requests.post(
-        MODEL_URL,
-        json={
-            "prompt": prompt,
-            "stop": ["<end_of_turn>", "<start_of_turn>"],
-            "n_predict": n_predict,
-            "temperature": temperature,
-            "top_p": top_p,
-            "cache_prompt": True,
-        },
-        timeout=300,
-    )
-    response.raise_for_status()
-    return parse_model_response(response.json())
+def call_model_completion(
+    prompt,
+    n_predict,
+    temperature=0.2,
+    top_p=0.9,
+    purpose="completion",
+    answer_mode="unknown",
+):
+    started_at = time.perf_counter()
+
+    try:
+        response = requests.post(
+            MODEL_URL,
+            json={
+                "prompt": prompt,
+                "stop": ["<end_of_turn>", "<start_of_turn>"],
+                "n_predict": n_predict,
+                "temperature": temperature,
+                "top_p": top_p,
+                "cache_prompt": True,
+            },
+            timeout=300,
+        )
+        response.raise_for_status()
+        result = parse_completion_result(response.json())
+    except Exception as error:
+        elapsed_seconds = time.perf_counter() - started_at
+        APP_METRICS.model_requests_total.labels(
+            purpose=purpose,
+            answer_mode=answer_mode,
+            status="error",
+        ).inc()
+        APP_METRICS.model_request_latency_seconds.labels(
+            purpose=purpose,
+            answer_mode=answer_mode,
+        ).observe(elapsed_seconds)
+        APP_METRICS.model_errors_total.labels(
+            purpose=purpose,
+            answer_mode=answer_mode,
+            error_type=type(error).__name__,
+        ).inc()
+        raise
+
+    elapsed_seconds = time.perf_counter() - started_at
+    APP_METRICS.model_requests_total.labels(
+        purpose=purpose,
+        answer_mode=answer_mode,
+        status="success",
+    ).inc()
+    APP_METRICS.model_request_latency_seconds.labels(
+        purpose=purpose,
+        answer_mode=answer_mode,
+    ).observe(elapsed_seconds)
+    record_model_usage_metrics(result, purpose, answer_mode)
+
+    return result
 
 
 def format_chunks_for_prompt(chunks, include_scores=False):
@@ -263,7 +429,9 @@ Do not add facts that are not present.
         wrap_model_prompt(summary_request),
         n_predict=SUMMARY_BATCH_TOKENS,
         temperature=0.2,
-    )
+        purpose="document_summary",
+        answer_mode="summary",
+    ).text
 
 
 def summarize_document(chunks):
@@ -298,38 +466,56 @@ Do not add facts that are not present.
         wrap_model_prompt(final_summary_request),
         n_predict=SUMMARY_FINAL_TOKENS,
         temperature=0.2,
-    )
+        purpose="document_summary",
+        answer_mode="summary",
+    ).text
 
     return truncate_summary(final_summary or combined_summaries)
 
 
 def index_uploaded_document(uploaded_file):
-    embedding_model = load_embedding_model()
-    extracted_text = clean_extracted_text(extract_file_text(uploaded_file))
-
-    if not extracted_text:
-        raise ValueError("The uploaded document did not contain extractable text.")
-
-    chunks = chunk_text_by_tokens(extracted_text, embedding_model.tokenizer)
-
-    if not chunks:
-        raise ValueError("The uploaded document was too short or could not be chunked.")
-
-    embeddings = embed_texts(embedding_model, [chunk["text"] for chunk in chunks])
-    summary = ""
-    summary_error = None
+    started_at = time.perf_counter()
 
     try:
-        summary = summarize_document(chunks)
-    except Exception as error:
-        summary_error = f"Document summary could not be generated: {error}"
+        embedding_model = load_embedding_model()
+        extracted_text = clean_extracted_text(extract_file_text(uploaded_file))
 
-    st.session_state.document_fingerprint = get_file_fingerprint(uploaded_file)
-    st.session_state.document_name = uploaded_file.name
-    st.session_state.document_chunks = chunks
-    st.session_state.document_embeddings = embeddings
-    st.session_state.document_summary = summary
-    st.session_state.document_summary_error = summary_error
+        if not extracted_text:
+            raise ValueError("The uploaded document did not contain extractable text.")
+
+        chunks = chunk_text_by_tokens(extracted_text, embedding_model.tokenizer)
+
+        if not chunks:
+            raise ValueError("The uploaded document was too short or could not be chunked.")
+
+        embeddings = embed_texts(embedding_model, [chunk["text"] for chunk in chunks])
+        summary = ""
+        summary_error = None
+
+        try:
+            summary = summarize_document(chunks)
+        except Exception as error:
+            summary_error = f"Document summary could not be generated: {error}"
+
+        st.session_state.document_fingerprint = get_file_fingerprint(uploaded_file)
+        st.session_state.document_name = uploaded_file.name
+        st.session_state.document_chunks = chunks
+        st.session_state.document_embeddings = embeddings
+        st.session_state.document_summary = summary
+        st.session_state.document_summary_error = summary_error
+    except Exception as error:
+        APP_METRICS.document_index_latency_seconds.labels(status="error").observe(
+            time.perf_counter() - started_at
+        )
+        APP_METRICS.document_index_errors_total.labels(
+            error_type=type(error).__name__,
+        ).inc()
+        raise
+
+    APP_METRICS.document_index_latency_seconds.labels(status="success").observe(
+        time.perf_counter() - started_at
+    )
+    APP_METRICS.document_chunks.observe(len(chunks))
 
 
 def retrieve_relevant_chunks(query, mode_config):
@@ -433,89 +619,101 @@ The summary gives broad document context. The chunks are the most relevant evide
 
 initialize_document_state()
 
-st.title("Document ShareLock")
-st.subheader("Chat Interface for Uploaded Documents")
+chat_tab, monitoring_tab = st.tabs(["Chat", "Monitoring"])
 
-st.write("Type a message, upload a document, or do both.")
+with chat_tab:
+    st.title("Document ShareLock")
+    st.subheader("Chat Interface for Uploaded Documents")
 
-user_message = st.text_area("Your message")
+    st.write("Type a message, upload a document, or do both.")
 
-answer_mode = st.radio(
-    "Answer mode",
-    list(ANSWER_MODES.keys()),
-    index=0,
-    horizontal=True,
-)
+    user_message = st.text_area("Your message")
 
-uploaded_file = st.file_uploader(
-    "Upload a document",
-    type=["txt", "pdf", "docx"]
-)
+    answer_mode = st.radio(
+        "Answer mode",
+        list(ANSWER_MODES.keys()),
+        index=0,
+        horizontal=True,
+    )
 
-if uploaded_file is not None:
-    st.success(f"Uploaded file: {uploaded_file.name}")
+    uploaded_file = st.file_uploader(
+        "Upload a document",
+        type=
+        ["txt", "pdf", "docx"]
+    )
 
-    current_fingerprint = get_file_fingerprint(uploaded_file)
-    if st.session_state.document_fingerprint != current_fingerprint:
-        with st.spinner("Indexing document and preparing summary..."):
-            try:
-                index_uploaded_document(uploaded_file)
-            except Exception as error:
-                clear_document_state()
-                st.session_state.document_summary_error = str(error)
+    if uploaded_file is not None:
+        st.success(f"Uploaded file: {uploaded_file.name}")
 
-    chunk_count = len(st.session_state.document_chunks or [])
-    if chunk_count:
-        summary_status = "summary ready" if st.session_state.document_summary else "summary unavailable"
-        st.caption(f"Indexed {chunk_count} chunks; {summary_status}.")
-        if st.session_state.document_summary_error:
+        current_fingerprint = get_file_fingerprint(uploaded_file)
+        if st.session_state.document_fingerprint != current_fingerprint:
+            with st.spinner("Indexing document and preparing summary..."):
+                try:
+                    index_uploaded_document(uploaded_file)
+                except Exception as error:
+                    clear_document_state()
+                    st.session_state.document_summary_error = str(error)
+
+        chunk_count = len(st.session_state.document_chunks or [])
+        if chunk_count:
+            summary_status = "summary ready" if st.session_state.document_summary else "summary unavailable"
+            st.caption(f"Indexed {chunk_count} chunks; {summary_status}.")
+            if st.session_state.document_summary_error:
+                st.warning(st.session_state.document_summary_error)
+        elif st.session_state.document_summary_error:
             st.warning(st.session_state.document_summary_error)
-    elif st.session_state.document_summary_error:
-        st.warning(st.session_state.document_summary_error)
-else:
-    if st.session_state.document_fingerprint is not None:
-        clear_document_state()
-
-if st.button("Send"):
-    user_request = user_message.strip()
-    has_document = bool(st.session_state.document_chunks)
-    mode_config = ANSWER_MODES[answer_mode]
-
-    if user_request == "" and not has_document:
-        st.warning("Please type a message or upload a document.")
-    elif uploaded_file is not None and not has_document:
-        st.warning("The uploaded document did not produce a searchable index.")
     else:
-        if not user_request:
-            user_request = "Summarize the uploaded document."
+        if st.session_state.document_fingerprint is not None:
+            clear_document_state()
 
-        if has_document:
-            retrieved_chunks = retrieve_relevant_chunks(user_request, mode_config)
-            final_prompt = build_document_prompt(
-                user_request,
-                st.session_state.document_summary,
-                retrieved_chunks,
-                answer_mode,
-            )
-            st.caption(f"{answer_mode} mode is using {len(retrieved_chunks)} retrieved chunks for this answer.")
+    if st.button("Send"):
+        user_request = user_message.strip()
+        has_document = bool(st.session_state.document_chunks)
+        mode_config = ANSWER_MODES[answer_mode]
+
+        if user_request == "" and not has_document:
+            st.warning("Please type a message or upload a document.")
+        elif uploaded_file is not None and not has_document:
+            st.warning("The uploaded document did not produce a searchable index.")
         else:
-            final_prompt = build_direct_prompt(user_request, answer_mode)
+            if not user_request:
+                user_request = "Summarize the uploaded document."
 
-        with st.spinner("Sending to the model..."):
-            try:
-                generated_output = call_model_completion(
-                    final_prompt,
-                    n_predict=MAX_OUTPUT_TOKENS,
-                    temperature=mode_config["temperature"],
-                    top_p=mode_config["top_p"],
+            if has_document:
+                retrieved_chunks = retrieve_relevant_chunks(user_request, mode_config)
+                final_prompt = build_document_prompt(
+                    user_request,
+                    st.session_state.document_summary,
+                    retrieved_chunks,
+                    answer_mode,
                 )
-                st.subheader("Response")
+                st.caption(f"{answer_mode} mode is using {len(retrieved_chunks)} retrieved chunks for this answer.")
+            else:
+                final_prompt = build_direct_prompt(user_request, answer_mode)
 
-                if generated_output:
-                    st.write(generated_output)
-                else:
-                    st.write("No message content found.")
+            with st.spinner("Sending to the model..."):
+                try:
+                    completion_result = call_model_completion(
+                        final_prompt,
+                        n_predict=MAX_OUTPUT_TOKENS,
+                        temperature=mode_config["temperature"],
+                        top_p=mode_config["top_p"],
+                        purpose="chat",
+                        answer_mode=answer_mode,
+                    )
+                    generated_output = completion_result.text
+                    st.subheader("Response")
 
-            except Exception as error:
-                st.error("Could not connect to the model server.")
-                st.write(error)
+                    if generated_output:
+                        st.write(generated_output)
+                    else:
+                        st.write("No message content found.")
+
+                except Exception as error:
+                    st.error("Could not connect to the model server.")
+                    st.write(error)
+
+with monitoring_tab:
+    st.title("Monitoring")
+    components.iframe(GRAFANA_EMBED_URL, height=900, scrolling=True)
+    st.caption(f"Grafana dashboard: {GRAFANA_EMBED_URL}")

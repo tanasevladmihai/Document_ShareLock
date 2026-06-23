@@ -9,7 +9,7 @@ pipeline {
         }
         stage('Deploy ML Model (llama.cpp)') {
         steps {
-                sh 'sudo podman run -d --name llama-server --network llm-net --memory=4g -v /opt/models:/models ghcr.io/ggml-org/llama.cpp:server -m /models/gemma-4-e4b.gguf --host 0.0.0.0 --port 8080 --threads 4 --ctx-size 2048'
+                sh 'sudo podman run -d --name llama-server --network llm-net --memory=4g -v /opt/models:/models ghcr.io/ggml-org/llama.cpp:server -m /models/gemma-4-e4b.gguf --host 0.0.0.0 --port 8080 --threads 4 --ctx-size 10240 --metrics'
             }
         }
         stage('Build & Deploy Interface') {
