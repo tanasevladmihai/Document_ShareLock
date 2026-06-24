@@ -6,6 +6,8 @@ services:
     hostname: llama-server
     ports:
       - "8082:8080"
+    volumes:
+      - ${MODEL_CACHE_DIR:-/opt/document-sharelock/models}:/models:Z
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/health || exit 1"]
       interval: 30s
